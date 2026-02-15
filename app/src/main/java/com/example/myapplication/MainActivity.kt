@@ -46,6 +46,7 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.io.InputStream
 import java.util.*
+import kotlin.math.abs
 
 // --- CONFIG ---
 val TARGET_DEVICE_NAME = "GlucoSensor_ESP32" // Имя вашего ESP32 в Bluetooth
@@ -109,9 +110,53 @@ class MainActivity : ComponentActivity() {
 data class PipelineData(
     val pi: String = "--",
     val x1: String = "--",
-    val x2: String = "--"
+    val x2: String = "--",
+    val glucosePrediction: String = "--",
+    val confidence: String = "--",
+    val confidenceScore: Float = 0f
+)
+private const val MODEL_X1_COEF = 0.0389
+private const val MODEL_X2_COEF = 0.8990
+private const val MODEL_X2_PI_INTERACTION_COEF = -0.0090
+
+private data class GlucoseInference(
+    val glucose: Double,
+    val confidenceScore: Float,
+    val confidenceLabel: String
 )
 
+private fun computeGlucoseInference(x1: Double, x2: Double, pi: Double): GlucoseInference {
+    val predictedGlucose =
+        MODEL_X1_COEF * x1 +
+                MODEL_X2_COEF * x2 +
+                MODEL_X2_PI_INTERACTION_COEF * x2 * pi
+
+    // Higher confidence in the best glycemic range, lower confidence in bad/extreme ranges.
+    val inBestRange = predictedGlucose in 4.0..7.0
+    val distanceFromBestRange = when {
+        predictedGlucose < 4.0 -> 4.0 - predictedGlucose
+        predictedGlucose > 7.0 -> predictedGlucose - 7.0
+        else -> 0.0
+    }
+    val rangeScore = if (inBestRange) 1.0 else (1.0 - distanceFromBestRange / 4.0).coerceIn(0.1, 0.9)
+
+    // If X2*PI interaction grows too much, PI dominates and confidence should go down.
+    val interactionMagnitude = abs(MODEL_X2_PI_INTERACTION_COEF * x2 * pi)
+    val interactionPenalty = (interactionMagnitude / 0.30).coerceIn(0.0, 0.35)
+    val piScore = (pi / 8.0).coerceIn(0.4, 1.0)
+
+    val confidence = (0.35 + 0.45 * rangeScore + 0.20 * piScore - interactionPenalty)
+        .coerceIn(0.15, 0.98)
+        .toFloat()
+
+    val confidenceLabel = when {
+        confidence >= 0.75f -> "High"
+        confidence >= 0.50f -> "Medium"
+        else -> "Low"
+    }
+
+    return GlucoseInference(predictedGlucose, confidence, confidenceLabel)
+}
 enum class SensorState {
     IDLE, CALIBRATING, MEASURING, NO_FINGER, RESULT_READY
 }
@@ -182,7 +227,19 @@ fun GlucoseApp(
             val value = line.substringAfter(":").trim()
             pipelineData = pipelineData.copy(x2 = value)
             sensorState = SensorState.RESULT_READY // Финал пайплайна
+            val x1 = pipelineData.x1.toDoubleOrNull()
+            val x2 = value.toDoubleOrNull()
+            val pi = pipelineData.pi.toDoubleOrNull()
+            if (x1 != null && x2 != null && pi != null) {
+                val inference = computeGlucoseInference(x1, x2, pi)
+                pipelineData = pipelineData.copy(
+                    glucosePrediction = String.format(Locale.US, "%.2f mmol/L", inference.glucose),
+                    confidence = "${inference.confidenceLabel} (${(inference.confidenceScore * 100).toInt()}%)",
+                    confidenceScore = inference.confidenceScore
+                )
+            }
         }
+
     }
 
     // --- BLUETOOTH LISTENER ---
@@ -297,7 +354,7 @@ fun GlucoseApp(
                             val progress = (maxCalibrationTime - calibrationTimeLeft) / maxCalibrationTime
                             Box(contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator(
-                                    progress = { 1f }, // Back track
+                                    progress = 1f, // Back track
                                     modifier = Modifier.size(120.dp),
                                     color = Color.White.copy(alpha = 0.1f),
                                     strokeWidth = 8.dp,
@@ -373,7 +430,29 @@ fun GlucoseApp(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                DataCard(
+                    title = "Glucose Prediction",
+                    value = pipelineData.glucosePrediction,
+                    icon = Icons.Default.ShowChart,
+                    color = AccentBlue,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                DataCard(
+                    title = "Confidence",
+                    value = pipelineData.confidence,
+                    icon = Icons.Default.Verified,
+                    color = when {
+                        pipelineData.confidenceScore >= 0.75f -> SuccessGreen
+                        pipelineData.confidenceScore >= 0.50f -> WarningOrange
+                        else -> ErrorRed
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
 
             // 3. TERMINAL TOGGLE
             Row(
