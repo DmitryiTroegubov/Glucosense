@@ -1,3 +1,1 @@
-# glucosense
-
-A new Flutter project.
+This project examines alternative approaches to glucose monitoring using non-invasive optical methods. As the current market of certified glucometers is limited to invasive solutions, the work is directed toward non-invasive methods. The chosen methodology is based on near infrared (NIR) spectroscopy combined with photoplethysmography(PPG). The proposed system uses a sensor of NIR waves for further prediction. To ensure accuracy a number of conditions are strictly controlled and accounted. Among them are temperature, pressure and external light. Measurement quality is assessed through perfusion index estimation, while signal preprocessing includes AC and DC separation and logarithmic feature transformation. Experimental data demonstrate stable signal acquisition and confirm the potential of spectroscopy approaches for non-invasive glucometers.
